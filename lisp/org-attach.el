@@ -1,6 +1,6 @@
 ;;; org-attach.el --- Manage file attachments to Org tasks -*- lexical-binding: t; -*-
 
-;; Copyright (C) 2008-2017 Free Software Foundation, Inc.
+;; Copyright (C) 2008-2018 Free Software Foundation, Inc.
 
 ;; Author: John Wiegley <johnw@newartisans.com>
 ;; Keywords: org data task
@@ -18,7 +18,7 @@
 ;; GNU General Public License for more details.
 
 ;; You should have received a copy of the GNU General Public License
-;; along with GNU Emacs.  If not, see <http://www.gnu.org/licenses/>.
+;; along with GNU Emacs.  If not, see <https://www.gnu.org/licenses/>.
 
 ;;; Commentary:
 
@@ -54,7 +54,8 @@
 If this is a relative path, it will be interpreted relative to the directory
 where the Org file lives."
   :group 'org-attach
-  :type 'directory)
+  :type 'directory
+  :safe #'stringp)
 
 (defcustom org-attach-commit t
   "If non-nil commit attachments with git.
@@ -144,7 +145,7 @@ When set to `query', ask the user instead."
   "Confirmation preference for automatically getting annex files.
 If \\='ask, prompt using `y-or-n-p'.  If t, always get.  If nil, never get."
   :group 'org-attach
-  :package-version '(Org . "9")
+  :package-version '(Org . "9.0")
   :version "26.1"
   :type '(choice
 	  (const :tag "confirm with `y-or-n-p'" ask)
@@ -319,7 +320,8 @@ the ATTACH_DIR property) their own attachment directory."
 (defun org-attach-annex-get-maybe (path)
   "Call git annex get PATH (via shell) if using git annex.
 Signals an error if the file content is not available and it was not retrieved."
-  (let ((path-relative (file-relative-name path)))
+  (let* ((default-directory (expand-file-name org-attach-directory))
+	 (path-relative (file-relative-name path)))
     (when (and (org-attach-use-annex)
 	       (not
 		(string-equal
@@ -507,7 +509,7 @@ This can be used after files have been added externally."
   (let ((attach-dir (org-attach-dir)))
     (when attach-dir
       (let ((files (org-attach-file-list attach-dir)))
-	(and files (org-attach-tag))
+	(org-attach-tag (not files))
 	(when org-attach-file-list-property
 	  (dolist (file files)
 	    (unless (string-match "^\\.\\.?\\'" file)
@@ -576,6 +578,42 @@ This function is called by `org-archive-hook'.  The option
 	    (yes-or-no-p "Delete all attachments? ")
 	  org-attach-archive-delete)
     (org-attach-delete-all t)))
+
+
+;; Attach from dired.
+
+;; Add the following lines to the config file to get a binding for
+;; dired-mode.
+
+;; (add-hook
+;;  'dired-mode-hook
+;;  (lambda ()
+;;    (define-key dired-mode-map (kbd "C-c C-x a") #'org-attach-dired-to-subtree))))
+
+(defun org-attach-dired-to-subtree (files)
+  "Attach FILES marked or current file in dired to subtree in other window.
+Takes the method given in `org-attach-method' for the attach action.
+Precondition: Point must be in a dired buffer.
+Idea taken from `gnus-dired-attach'."
+  (interactive
+   (list (dired-get-marked-files)))
+  (unless (eq major-mode 'dired-mode)
+    (user-error "This command must be triggered in a dired buffer."))
+  (let ((start-win (selected-window))
+        (other-win
+         (get-window-with-predicate
+          (lambda (window)
+            (with-current-buffer (window-buffer window)
+              (eq major-mode 'org-mode))))))
+    (unless other-win
+      (user-error
+       "Can't attach to subtree.  No window displaying an Org buffer"))
+    (select-window other-win)
+    (dolist (file files)
+      (org-attach-attach file))
+    (select-window start-win)))
+
+
 
 (add-hook 'org-archive-hook 'org-attach-archive-delete-maybe)
 

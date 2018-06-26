@@ -1,10 +1,10 @@
 ;;; org-timer.el --- Timer code for Org mode         -*- lexical-binding: t; -*-
 
-;; Copyright (C) 2008-2017 Free Software Foundation, Inc.
+;; Copyright (C) 2008-2018 Free Software Foundation, Inc.
 
 ;; Author: Carsten Dominik <carsten at orgmode dot org>
 ;; Keywords: outlines, hypermedia, calendar, wp
-;; Homepage: http://orgmode.org
+;; Homepage: https://orgmode.org
 ;;
 ;; This file is part of GNU Emacs.
 ;;
@@ -19,7 +19,7 @@
 ;; GNU General Public License for more details.
 
 ;; You should have received a copy of the GNU General Public License
-;; along with GNU Emacs.  If not, see <http://www.gnu.org/licenses/>.
+;; along with GNU Emacs.  If not, see <https://www.gnu.org/licenses/>.
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;
 ;;; Commentary:
@@ -152,6 +152,7 @@ the region 0:00:00."
 	       (org-timer-secs-to-hms (or delta 0)))
       (run-hooks 'org-timer-start-hook)))))
 
+;;;###autoload
 (defun org-timer-pause-or-continue (&optional stop)
   "Pause or continue the relative or countdown timer.
 With prefix arg STOP, stop it entirely."
@@ -189,6 +190,7 @@ With prefix arg STOP, stop it entirely."
     (org-timer-set-mode-line 'paused)
     (message "Timer paused at %s" (org-timer-value-string)))))
 
+;;;###autoload
 (defun org-timer-stop ()
   "Stop the relative or countdown timer."
   (interactive)

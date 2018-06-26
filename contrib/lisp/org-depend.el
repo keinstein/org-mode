@@ -1,9 +1,9 @@
 ;;; org-depend.el --- TODO dependencies for Org-mode
-;; Copyright (C) 2008-2017 Free Software Foundation, Inc.
+;; Copyright (C) 2008-2018 Free Software Foundation, Inc.
 ;;
 ;; Author: Carsten Dominik <carsten at orgmode dot org>
 ;; Keywords: outlines, hypermedia, calendar, wp
-;; Homepage: http://orgmode.org
+;; Homepage: https://orgmode.org
 ;; Version: 0.08
 ;;
 ;; This file is not part of GNU Emacs.
@@ -225,7 +225,7 @@ This does two different kinds of triggers:
       ;; Lets see if this entry has a TRIGGER property.
       ;; If yes, split it up on whitespace.
       (setq trigger (org-entry-get pos "TRIGGER")
-	    triggers (and trigger (org-split-string trigger "[ \t]+")))
+	    triggers (and trigger (split-string trigger)))
 
       ;; Go through all the triggers
       (while (setq tr (pop triggers))
@@ -383,7 +383,7 @@ this ID property, that entry is also checked."
 	    ;; Lets see if we will allow it.  Find the BLOCKER property
 	    ;; and split it on whitespace.
 	    (setq blocker (org-entry-get pos "BLOCKER")
-		  blockers (and blocker (org-split-string blocker "[ \t]+")))
+		  blockers (and blocker (split-string blocker)))
 
 	    ;; go through all the blockers
 	    (while (setq bl (pop blockers))

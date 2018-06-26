@@ -1,6 +1,6 @@
 ;;; org-protocol.el --- Intercept Calls from Emacsclient to Trigger Custom Actions -*- lexical-binding: t; -*-
 ;;
-;; Copyright (C) 2008-2017 Free Software Foundation, Inc.
+;; Copyright (C) 2008-2018 Free Software Foundation, Inc.
 ;;
 ;; Authors: Bastien Guerry <bzg@gnu.org>
 ;;       Daniel M German <dmg AT uvic DOT org>
@@ -22,7 +22,7 @@
 ;; GNU General Public License for more details.
 
 ;; You should have received a copy of the GNU General Public License
-;; along with GNU Emacs.  If not, see <http://www.gnu.org/licenses/>.
+;; along with GNU Emacs.  If not, see <https://www.gnu.org/licenses/>.
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;; Commentary:
@@ -184,10 +184,10 @@ Possible properties are:
 Example:
 
    (setq org-protocol-project-alist
-       \\='((\"http://orgmode.org/worg/\"
+       \\='((\"https://orgmode.org/worg/\"
           :online-suffix \".php\"
           :working-suffix \".org\"
-          :base-url \"http://orgmode.org/worg/\"
+          :base-url \"https://orgmode.org/worg/\"
           :working-directory \"/home/user/org/Worg/\")
          (\"http://localhost/org-notes/\"
           :online-suffix \".html\"
@@ -468,19 +468,20 @@ You may specify the template with a template= query parameter, like this:
   javascript:location.href = \\='org-protocol://capture?template=b\\='+ ...
 
 Now template ?b will be used."
-  (if (and (boundp 'org-stored-links)
-	   (org-protocol-do-capture info))
-      (message "Item captured."))
+  (when (and (boundp 'org-stored-links)
+	     (org-protocol-do-capture info))
+    (message "Item captured."))
   nil)
 
 (defun org-protocol-convert-query-to-plist (query)
   "Convert QUERY key=value pairs in the URL to a property list."
-  (if query
-      (apply 'append (mapcar (lambda (x)
-			       (let ((c (split-string x "=")))
-				 (list (intern (concat ":" (car c))) (cadr c))))
-			     (split-string query "&")))))
+  (when query
+    (apply 'append (mapcar (lambda (x)
+			     (let ((c (split-string x "=")))
+			       (list (intern (concat ":" (car c))) (cadr c))))
+			   (split-string query "&")))))
 
+(defvar org-capture-templates)
 (defun org-protocol-do-capture (info)
   "Perform the actual capture based on INFO."
   (let* ((temp-parts (org-protocol-parse-parameters info))
@@ -494,8 +495,7 @@ Now template ?b will be used."
 	 (template (or (plist-get parts :template)
 		       org-protocol-default-template-key))
 	 (url (and (plist-get parts :url) (org-protocol-sanitize-uri (plist-get parts :url))))
-	 (type (and url (if (string-match "^\\([a-z]+\\):" url)
-			    (match-string 1 url))))
+	 (type (and url (string-match "^\\([a-z]+\\):" url) (match-string 1 url)))
 	 (title (or (plist-get parts :title) ""))
 	 (region (or (plist-get parts :body) ""))
 	 (orglink (if url
@@ -663,7 +663,7 @@ to deal with new-style links.")
 ;;; Org specific functions:
 
 (defun org-protocol-create-for-org ()
-  "Create a Org protocol project for the current file's project.
+  "Create an Org protocol project for the current file's project.
 The visited file needs to be part of a publishing project in
 `org-publish-project-alist' for this to work.  The function
 delegates most of the work to `org-protocol-create'."
@@ -688,7 +688,7 @@ the cdr of an element in `org-publish-project-alist', reuse
   (let ((working-dir (expand-file-name
 		      (or (plist-get project-plist :base-directory)
 			  default-directory)))
-        (base-url "http://orgmode.org/worg/")
+        (base-url "https://orgmode.org/worg/")
         (strip-suffix (or (plist-get project-plist :html-extension) ".html"))
         (working-suffix (if (plist-get project-plist :base-extension)
                             (concat "." (plist-get project-plist :base-extension))

@@ -1,11 +1,11 @@
 ;;; ob-scheme.el --- Babel Functions for Scheme      -*- lexical-binding: t; -*-
 
-;; Copyright (C) 2010-2017 Free Software Foundation, Inc.
+;; Copyright (C) 2010-2018 Free Software Foundation, Inc.
 
 ;; Authors: Eric Schulte
 ;;	    Michael Gauland
 ;; Keywords: literate programming, reproducible research, scheme
-;; Homepage: http://orgmode.org
+;; Homepage: https://orgmode.org
 
 ;; This file is part of GNU Emacs.
 
@@ -20,7 +20,7 @@
 ;; GNU General Public License for more details.
 
 ;; You should have received a copy of the GNU General Public License
-;; along with GNU Emacs.  If not, see <http://www.gnu.org/licenses/>.
+;; along with GNU Emacs.  If not, see <https://www.gnu.org/licenses/>.
 
 ;;; Commentary:
 
@@ -32,7 +32,7 @@
 ;;; Requirements:
 
 ;; - a working scheme implementation
-;;   (e.g. guile http://www.gnu.org/software/guile/guile.html)
+;;   (e.g. guile https://www.gnu.org/software/guile/guile.html)
 ;;
 ;; - for session based evaluation geiser is required, which is available from
 ;;   ELPA.
@@ -40,16 +40,23 @@
 ;;; Code:
 (require 'ob)
 (require 'geiser nil t)
+(require 'geiser-impl nil t)
 (defvar geiser-repl--repl)             ; Defined in geiser-repl.el
 (defvar geiser-impl--implementation)   ; Defined in geiser-impl.el
 (defvar geiser-default-implementation) ; Defined in geiser-impl.el
 (defvar geiser-active-implementations) ; Defined in geiser-impl.el
+(defvar geiser-debug-show-debug-p)     ; Defined in geiser-debug.el
+(defvar geiser-debug-jump-to-debug-p)  ; Defined in geiser-debug.el
+(defvar geiser-repl-use-other-window)  ; Defined in geiser-repl.el
+(defvar geiser-repl-window-allow-split)	; Defined in geiser-repl.el
 
 (declare-function run-geiser "ext:geiser-repl" (impl))
 (declare-function geiser-mode "ext:geiser-mode" ())
 (declare-function geiser-eval-region "ext:geiser-mode"
                   (start end &optional and-go raw nomsg))
 (declare-function geiser-repl-exit "ext:geiser-repl" (&optional arg))
+(declare-function geiser-eval--retort-output "ext:geiser-eval" (ret))
+(declare-function geiser-eval--retort-result-str "ext:geiser-eval" (ret prefix))
 
 (defcustom org-babel-scheme-null-to 'hline
   "Replace `null' and empty lists in scheme tables with this before returning."
@@ -105,10 +112,9 @@
     (or buffer
 	(progn
 	  (run-geiser impl)
-	  (if name
-	      (progn
-		(rename-buffer name t)
-		(org-babel-scheme-set-session-buffer name (current-buffer))))
+	  (when name
+	    (rename-buffer name t)
+	    (org-babel-scheme-set-session-buffer name (current-buffer)))
 	  (current-buffer)))))
 
 (defun org-babel-scheme-make-session-name (buffer name impl)
@@ -150,35 +156,31 @@ is true; otherwise returns the last value."
     (with-temp-buffer
       (insert (format ";; -*- geiser-scheme-implementation: %s -*-" impl))
       (newline)
-      (insert (if output
-		  (format "(with-output-to-string (lambda () %s))" code)
-		code))
+      (insert code)
       (geiser-mode)
-      (let ((repl-buffer (save-current-buffer
-			   (org-babel-scheme-get-repl impl repl))))
-	(when (not (eq impl (org-babel-scheme-get-buffer-impl
-			     (current-buffer))))
-	  (message "Implementation mismatch: %s (%s) %s (%s)" impl (symbolp impl)
-		   (org-babel-scheme-get-buffer-impl (current-buffer))
-		   (symbolp (org-babel-scheme-get-buffer-impl
-			     (current-buffer)))))
-	(setq geiser-repl--repl repl-buffer)
-	(setq geiser-impl--implementation nil)
-	(setq result (org-babel-scheme-capture-current-message
-		      (geiser-eval-region (point-min) (point-max))))
-	(setq result
-	      (if (and (stringp result) (equal (substring result 0 3) "=> "))
-		  (replace-regexp-in-string "^=> " "" result)
-		"\"An error occurred.\""))
-	(when (not repl)
-	  (save-current-buffer (set-buffer repl-buffer)
-			       (geiser-repl-exit))
-	  (set-process-query-on-exit-flag (get-buffer-process repl-buffer) nil)
-	  (kill-buffer repl-buffer))
-	(setq result (if (or (string= result "#<void>")
-			     (string= result "#<unspecified>"))
-			 nil
-		       result))))
+      (let ((geiser-repl-window-allow-split nil)
+	    (geiser-repl-use-other-window nil))
+	(let ((repl-buffer (save-current-buffer
+			     (org-babel-scheme-get-repl impl repl))))
+	  (when (not (eq impl (org-babel-scheme-get-buffer-impl
+			       (current-buffer))))
+	    (message "Implementation mismatch: %s (%s) %s (%s)" impl (symbolp impl)
+		     (org-babel-scheme-get-buffer-impl (current-buffer))
+		     (symbolp (org-babel-scheme-get-buffer-impl
+			       (current-buffer)))))
+	  (setq geiser-repl--repl repl-buffer)
+	  (setq geiser-impl--implementation nil)
+	  (let ((geiser-debug-jump-to-debug-p nil)
+		(geiser-debug-show-debug-p nil))
+	    (let ((ret (geiser-eval-region (point-min) (point-max))))
+	      (setq result (if output
+			       (geiser-eval--retort-output ret)
+			     (geiser-eval--retort-result-str ret "")))))
+	  (when (not repl)
+	    (save-current-buffer (set-buffer repl-buffer)
+				 (geiser-repl-exit))
+	    (set-process-query-on-exit-flag (get-buffer-process repl-buffer) nil)
+	    (kill-buffer repl-buffer)))))
     result))
 
 (defun org-babel-scheme--table-or-string (results)
@@ -210,6 +212,7 @@ This function is called by `org-babel-execute-src-block'"
 	     (session (org-babel-scheme-make-session-name
 		       source-buffer-name (cdr (assq :session params)) impl))
 	     (full-body (org-babel-expand-body:scheme body params))
+	     (result-params (cdr (assq :result-params params)))
 	     (result
 	      (org-babel-scheme-execute-with-geiser
 	       full-body		       ; code
@@ -223,7 +226,9 @@ This function is called by `org-babel-execute-src-block'"
 				     (cdr (assq :colnames params)))
 		(org-babel-pick-name (cdr (assq :rowname-names params))
 				     (cdr (assq :rownames params))))))
-	  (org-babel-scheme--table-or-string table))))))
+	  (org-babel-result-cond result-params
+	    result
+	    (org-babel-scheme--table-or-string table)))))))
 
 (provide 'ob-scheme)
 

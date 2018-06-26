@@ -1,10 +1,10 @@
 ;;; org-capture.el --- Fast note taking in Org       -*- lexical-binding: t; -*-
 
-;; Copyright (C) 2010-2017 Free Software Foundation, Inc.
+;; Copyright (C) 2010-2018 Free Software Foundation, Inc.
 
 ;; Author: Carsten Dominik <carsten at orgmode dot org>
 ;; Keywords: outlines, hypermedia, calendar, wp
-;; Homepage: http://orgmode.org
+;; Homepage: https://orgmode.org
 ;;
 ;; This file is part of GNU Emacs.
 ;;
@@ -19,7 +19,7 @@
 ;; GNU General Public License for more details.
 
 ;; You should have received a copy of the GNU General Public License
-;; along with GNU Emacs.  If not, see <http://www.gnu.org/licenses/>.
+;; along with GNU Emacs.  If not, see <https://www.gnu.org/licenses/>.
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;
 ;;; Commentary:
@@ -51,20 +51,23 @@
 (require 'org)
 
 (declare-function org-at-encrypted-entry-p "org-crypt" ())
-(declare-function org-datetree-find-date-create "org-datetree"
-		  (date &optional keep-restriction))
+(declare-function org-clock-update-mode-line "org-clock" (&optional refresh))
+(declare-function org-datetree-find-date-create "org-datetree" (date &optional keep-restriction))
 (declare-function org-decrypt-entry "org-crypt" ())
 (declare-function org-encrypt-entry "org-crypt" ())
 (declare-function org-table-analyze "org-table" ())
 (declare-function org-table-current-dline "org-table" ())
+(declare-function org-table-fix-formulas "org-table" (key replace &optional limit delta remove))
 (declare-function org-table-goto-line "org-table" (N))
 
+(defvar dired-buffers)
 (defvar org-end-time-was-given)
 (defvar org-remember-default-headline)
 (defvar org-remember-templates)
-(defvar org-table-hlines)
+(defvar org-table-border-regexp)
 (defvar org-table-current-begin-pos)
-(defvar dired-buffers)
+(defvar org-table-fix-formulas-confirm)
+(defvar org-table-hlines)
 
 (defvar org-capture-clock-was-started nil
   "Internal flag, noting if the clock was started.")
@@ -78,6 +81,12 @@
 
 (defvar org-capture-is-refiling nil
   "Non-nil when capture process is refiling an entry.")
+
+(defvar org-capture--prompt-history-table (make-hash-table :test #'equal)
+  "Hash table for all history lists per prompt.")
+
+(defvar org-capture--prompt-history nil
+  "History list for prompt placeholders.")
 
 (defgroup org-capture nil
   "Options concerning capturing new entries."
@@ -468,37 +477,32 @@ this is necessary after initialization of the capture process,
 to avoid conflicts with other active capture processes."
   (plist-get (if local org-capture-current-plist org-capture-plist) prop))
 
-(defun org-capture-member (prop &optional local)
-  "Is PROP a property in `org-capture-plist'.
-When LOCAL is set, use the local variable `org-capture-current-plist',
-this is necessary after initialization of the capture process,
-to avoid conflicts with other active capture processes."
-  (plist-get (if local org-capture-current-plist org-capture-plist) prop))
-
 ;;; The minor mode
 
-(defvar org-capture-mode-map (make-sparse-keymap)
+(defvar org-capture-mode-map
+  (let ((map (make-sparse-keymap)))
+    (define-key map "\C-c\C-c" #'org-capture-finalize)
+    (define-key map "\C-c\C-k" #'org-capture-kill)
+    (define-key map "\C-c\C-w" #'org-capture-refile)
+    map)
   "Keymap for `org-capture-mode', a minor mode.
 Use this map to set additional keybindings for when Org mode is used
 for a capture buffer.")
 
 (defvar org-capture-mode-hook nil
-  "Hook for the minor `org-capture-mode'.")
+  "Hook for the `org-capture-mode' minor mode.")
 
 (define-minor-mode org-capture-mode
   "Minor mode for special key bindings in a capture buffer.
 
 Turning on this mode runs the normal hook `org-capture-mode-hook'."
-  nil " Rem" org-capture-mode-map
+  nil " Cap" org-capture-mode-map
   (setq-local
    header-line-format
    (substitute-command-keys
     "\\<org-capture-mode-map>Capture buffer.  Finish \
 `\\[org-capture-finalize]', refile `\\[org-capture-refile]', \
 abort `\\[org-capture-kill]'.")))
-(define-key org-capture-mode-map "\C-c\C-c" 'org-capture-finalize)
-(define-key org-capture-mode-map "\C-c\C-k" 'org-capture-kill)
-(define-key org-capture-mode-map "\C-c\C-w" 'org-capture-refile)
 
 ;;; The main commands
 
@@ -535,8 +539,8 @@ not-in-buffer: command not displayed in matching buffers
 If you define several checks, the agenda command will be
 accessible if there is at least one valid check.
 
-You can also bind a key to another agenda custom command
-depending on contextual rules.
+You can also bind a key to another capture template depending on
+contextual rules.
 
     \\='((\"c\" \"d\" ((in-mode . \"message-mode\"))))
 
@@ -718,25 +722,26 @@ captured item after finalizing."
 
   ;; Did we start the clock in this capture buffer?
   (when (and org-capture-clock-was-started
-	     org-clock-marker (marker-buffer org-clock-marker)
-	     (equal (marker-buffer org-clock-marker) (buffer-base-buffer))
-	     (> org-clock-marker (point-min))
+	     org-clock-marker
+	     (eq (marker-buffer org-clock-marker) (buffer-base-buffer))
+	     (>= org-clock-marker (point-min))
 	     (< org-clock-marker (point-max)))
-    ;; Looks like the clock we started is still running.  Clock out.
-    (when (not org-capture-clock-keep) (let (org-log-note-clock-out) (org-clock-out)))
-    (when (and (not org-capture-clock-keep)
-	       (org-capture-get :clock-resume 'local)
-	       (markerp (org-capture-get :interrupted-clock 'local))
-	       (buffer-live-p (marker-buffer
-			       (org-capture-get :interrupted-clock 'local))))
-      (let ((clock-in-task (org-capture-get :interrupted-clock 'local)))
-	(org-with-point-at clock-in-task
-	  (org-clock-in)))
-      (message "Interrupted clock has been resumed")))
+    ;; Looks like the clock we started is still running.
+    (if org-capture-clock-keep
+	;; User may have completed clocked heading from the template.
+	;; Refresh clock mode line.
+	(org-clock-update-mode-line t)
+      ;; Clock out.  Possibly resume interrupted clock.
+      (let (org-log-note-clock-out) (org-clock-out))
+      (when (and (org-capture-get :clock-resume 'local)
+		 (markerp (org-capture-get :interrupted-clock 'local))
+		 (buffer-live-p (marker-buffer
+				 (org-capture-get :interrupted-clock 'local))))
+	(let ((clock-in-task (org-capture-get :interrupted-clock 'local)))
+	  (org-with-point-at clock-in-task (org-clock-in)))
+	(message "Interrupted clock has been resumed"))))
 
-  (let ((beg (point-min))
-	(end (point-max))
-	(abort-note nil))
+  (let ((abort-note nil))
     ;; Store the size of the capture buffer
     (org-capture-put :captured-entry-size (- (point-max) (point-min)))
     (widen)
@@ -744,16 +749,11 @@ captured item after finalizing."
     (org-capture-put :insertion-point (point))
 
     (if org-note-abort
-	(let ((m1 (org-capture-get :begin-marker 'local))
-	      (m2 (org-capture-get :end-marker 'local)))
-	  (if (and m1 m2 (= m1 beg) (= m2 end))
-	      (progn
-		(setq m2 (if (cdr (assq 'heading org-blank-before-new-entry))
-			     m2 (1+ m2))
-		      m2 (if (< (point-max) m2) (point-max) m2))
-		(setq abort-note 'clean)
-		(kill-region m1 m2))
-	    (setq abort-note 'dirty)))
+	(let ((beg (org-capture-get :begin-marker 'local))
+	      (end (org-capture-get :end-marker 'local)))
+	  (if (not (and beg end)) (setq abort-note 'dirty)
+	    (setq abort-note t)
+	    (org-with-wide-buffer (kill-region beg end))))
 
       ;; Postprocessing:  Update Statistics cookies, do the sorting
       (when (derived-mode-p 'org-mode)
@@ -765,9 +765,21 @@ captured item after finalizing."
 	;; If we have added a table line, maybe recompute?
 	(when (and (eq (org-capture-get :type 'local) 'table-line)
 		   (org-at-table-p))
-	  (if (org-table-get-stored-formulas)
-	      (org-table-recalculate 'all) ;; FIXME: Should we iterate???
-	    (org-table-align))))
+	  (if (not (org-table-get-stored-formulas)) (org-table-align)
+	    ;; Adjust formulas, if necessary.  We assume a non-nil
+	    ;; `:immediate-finish' means that no confirmation is
+	    ;; required.  Else, obey `org-table-fix-formulas-confirm'.
+	    ;;
+	    ;; The delta required to fix formulas depends on the
+	    ;; number of rows inserted by the template.
+	    (when (or (org-capture-get :immediate-finish)
+		      (not org-table-fix-formulas-confirm)
+		      (funcall org-table-fix-formulas-confirm "Fix formulas? "))
+	      (org-table-fix-formulas
+	       "@" nil (1- (org-table-current-dline))
+	       (count-lines (org-capture-get :begin-marker 'local)
+			    (org-capture-get :end-marker 'local))))
+	    (org-table-recalculate 'all)))) ;FIXME: should we iterate?
       ;; Store this place as the last one where we stored something
       ;; Do the marking in the base buffer, so that it makes sense after
       ;; the indirect buffer has been killed.
@@ -782,7 +794,6 @@ captured item after finalizing."
 	(org-encrypt-entry)))
 
     ;; Kill the indirect buffer
-    (save-buffer)
     (let ((return-wconf (org-capture-get :return-to-wconf 'local))
 	  (new-buffer (org-capture-get :new-buffer 'local))
 	  (kill-buffer (org-capture-get :kill-buffer 'local))
@@ -847,13 +858,17 @@ for `entry'-type templates"))
   (let* ((base (or (buffer-base-buffer) (current-buffer)))
 	 (pos (make-marker))
 	 (org-capture-is-refiling t)
-	 (kill-buffer (org-capture-get :kill-buffer 'local)))
+	 (kill-buffer (org-capture-get :kill-buffer 'local))
+	 (jump-to-captured (org-capture-get :jump-to-captured 'local)))
     ;; Since `org-capture-finalize' may alter buffer contents (e.g.,
     ;; empty lines) around entry, use a marker to refer to the
     ;; headline to be refiled.  Place the marker in the base buffer,
     ;; as the current indirect one is going to be killed.
     (set-marker pos (save-excursion (org-back-to-heading t) (point)) base)
-    (org-capture-put :kill-buffer nil)
+    ;; `org-capture-finalize' calls `org-capture-goto-last-stored' too
+    ;; early.  We want to wait for the refiling to be over, so we
+    ;; control when the latter function is called.
+    (org-capture-put :kill-buffer nil :jump-to-captured nil)
     (unwind-protect
 	(progn
 	  (org-capture-finalize)
@@ -862,7 +877,8 @@ for `entry'-type templates"))
 	      (org-with-wide-buffer
 	       (goto-char pos)
 	       (call-interactively 'org-refile))))
-	  (when kill-buffer (kill-buffer base)))
+	  (when kill-buffer (kill-buffer base))
+	  (when jump-to-captured (org-capture-goto-last-stored)))
       (set-marker pos nil))))
 
 (defun org-capture-kill ()
@@ -916,18 +932,24 @@ Store them in the capture property list."
 	   (_ (error "Cannot find target ID \"%s\"" id))))
 	(`(file+headline ,path ,headline)
 	 (set-buffer (org-capture-target-buffer path))
+	 ;; Org expects the target file to be in Org mode, otherwise
+	 ;; it throws an error.  However, the default notes files
+	 ;; should work out of the box.  In this case, we switch it to
+	 ;; Org mode.
 	 (unless (derived-mode-p 'org-mode)
-	   (error "Target buffer \"%s\" for file+headline not in Org mode"
-		  (current-buffer)))
+	   (org-display-warning
+	    (format "Capture requirement: switching buffer %S to Org mode"
+		    (current-buffer)))
+	   (org-mode))
 	 (org-capture-put-target-region-and-position)
 	 (widen)
 	 (goto-char (point-min))
 	 (if (re-search-forward (format org-complex-heading-regexp-format
 					(regexp-quote headline))
 				nil t)
-	     (goto-char (line-beginning-position))
+	     (beginning-of-line)
 	   (goto-char (point-max))
-	   (or (bolp) (insert "\n"))
+	   (unless (bolp) (insert "\n"))
 	   (insert "* " headline "\n")
 	   (beginning-of-line 0)))
 	(`(file+olp ,path . ,outline-path)
@@ -990,7 +1012,7 @@ Store them in the capture property list."
 			 ;; Use 00:00 when no time is given for another
 			 ;; date than today?
 			 (apply #'encode-time
-				(append '(0 0 0)
+				(append `(0 0 ,org-extend-today-until)
 					(cl-cdddr (decode-time prompt-time)))))
 			((string-match "\\([^ ]+\\)--?[^ ]+[ ]+\\(.*\\)"
 				       org-read-date-final-answer)
@@ -1008,7 +1030,7 @@ Store them in the capture property list."
 	       (org-today))))
 	    ;; the following is the keep-restriction argument for
 	    ;; org-datetree-find-date-create
-	    (if outline-path 'subtree-at-point))))
+	    (when outline-path 'subtree-at-point))))
 	(`(file+function ,path ,function)
 	 (set-buffer (org-capture-target-buffer path))
 	 (org-capture-put-target-region-and-position)
@@ -1077,7 +1099,7 @@ may have been stored before."
   (org-switch-to-buffer-other-window
    (org-capture-get-indirect-buffer (org-capture-get :buffer) "CAPTURE"))
   (widen)
-  (outline-show-all)
+  (org-show-all)
   (goto-char (org-capture-get :pos))
   (setq-local outline-level 'org-outline-level)
   (pcase (org-capture-get :type)
@@ -1092,7 +1114,7 @@ may have been stored before."
 (defun org-capture-place-entry ()
   "Place the template as a new Org entry."
   (let ((reversed? (org-capture-get :prepend))
-	level)
+	(level 1))
     (when (org-capture-get :exact-position)
       (goto-char (org-capture-get :exact-position)))
     (cond
@@ -1101,7 +1123,7 @@ may have been stored before."
       (setq level (org-get-valid-level
 		   (if (org-at-heading-p) (org-outline-level) 1)
 		   1))
-      (if reversed? (outline-next-heading) (org-end-of-subtree t)))
+      (if reversed? (outline-next-heading) (org-end-of-subtree t t)))
      ;; Insert as a top-level entry at the beginning of the file.
      (reversed?
       (goto-char (point-min))
@@ -1145,10 +1167,10 @@ may have been stored before."
 	    (goto-char beg)
 	    (when (org-list-search-forward (org-item-beginning-re) end t)
 	      (goto-char (match-beginning 0))
-	      (setq ind (org-get-indentation))))
+	      (setq ind (current-indentation))))
 	(goto-char end)
 	(when (org-list-search-backward (org-item-beginning-re) beg t)
-	  (setq ind (org-get-indentation))
+	  (setq ind (current-indentation))
 	  (org-end-of-item)))
       (unless ind (goto-char end)))
     ;; Remove common indentation
@@ -1165,7 +1187,7 @@ may have been stored before."
     (unless (eolp) (save-excursion (insert "\n")))
     (unless ind
       (org-indent-line)
-      (setq ind (org-get-indentation))
+      (setq ind (current-indentation))
       (delete-region beg (point)))
     ;; Set the correct indentation, depending on context
     (setq ind (make-string ind ?\ ))
@@ -1180,92 +1202,87 @@ may have been stored before."
     (setq end (point))
     (org-capture-mark-kill-region beg end)
     (org-capture-narrow beg end)
-    (if (or (re-search-backward "%\\?" beg t)
-	    (re-search-forward "%\\?" end t))
-	(replace-match ""))))
+    (when (or (re-search-backward "%\\?" beg t)
+	      (re-search-forward "%\\?" end t))
+      (replace-match ""))))
 
 (defun org-capture-place-table-line ()
   "Place the template as a table line."
   (require 'org-table)
-  (let* ((txt (org-capture-get :template))
-	 (target-entry-p (org-capture-get :target-entry-p))
-	 (table-line-pos (org-capture-get :table-line-pos))
-	 beg end)
+  (let ((text
+	 (pcase (org-trim (org-capture-get :template))
+	   ((pred (string-match-p org-table-border-regexp))
+	    "| %?Bad template |")
+	   (text (concat text "\n"))))
+	(table-line-pos (org-capture-get :table-line-pos))
+	beg end)
     (cond
      ((org-capture-get :exact-position)
-      (goto-char (org-capture-get :exact-position)))
-     ((not target-entry-p)
-      ;; Table is not necessarily under a heading
+      (setq beg (org-capture-get :exact-position))
+      (setq end (save-excursion (outline-next-heading) (point))))
+     ((not (org-capture-get :target-entry-p))
+      ;; Table is not necessarily under a heading.  Find first table
+      ;; in the buffer.
       (setq beg (point-min) end (point-max)))
      (t
-      ;; WE are at a heading, limit search to the body
-      (setq beg (1+ (point-at-eol))
-	    end (save-excursion (outline-next-heading) (point)))))
-    (if (re-search-forward org-table-dataline-regexp end t)
-	(let ((b (org-table-begin)) (e (org-table-end)) (case-fold-search t))
-	  (goto-char e)
-	  (if (looking-at "[ \t]*#\\+tblfm:")
-	      (forward-line 1))
-	  (narrow-to-region b (point)))
+      ;; We are at a heading, limit search to the body.
+      (setq beg (line-beginning-position 2))
+      (setq end (save-excursion (outline-next-heading) (point)))))
+    (goto-char beg)
+    ;; Narrow to the table, possibly creating one if necessary.
+    (catch :found
+      (while (re-search-forward org-table-dataline-regexp end t)
+	(pcase (org-element-lineage (org-element-at-point) '(table) t)
+	  (`nil nil)
+	  ((pred (lambda (e) (eq 'table.el (org-element-property :type e))))
+	   nil)
+	  (table
+	   (goto-char (org-element-property :contents-end table))
+	   (narrow-to-region (org-element-property :post-affiliated table)
+			     (point))
+	   (throw :found t))))
+      ;; No table found.  Create it with an empty header.
       (goto-char end)
-      (insert "\n|   |\n|----|\n|    |\n")
-      (narrow-to-region (1+ end) (point)))
-    ;; We are narrowed to the table, or to an empty line if there was no table
-
-    ;; Check if the template is good
-    (if (not (string-match org-table-dataline-regexp txt))
-	(setq txt "| %?Bad template |\n"))
-    (if (functionp table-line-pos)
-	(setq table-line-pos (funcall table-line-pos))
-      (setq table-line-pos (eval table-line-pos)))
+      (unless (bolp) (insert "\n"))
+      (let ((origin (point)))
+	(insert "|   |\n|----|\n")
+	(narrow-to-region origin (point))))
+    ;; In the current table, find the appropriate location for TEXT.
     (cond
      ((and table-line-pos
-	   (string-match "\\(I+\\)\\([-+][0-9]\\)" table-line-pos))
+	   (string-match "\\(I+\\)\\([-+][0-9]+\\)" table-line-pos))
       (goto-char (point-min))
-      ;; we have a complex line specification
-      (let ((ll (ignore-errors
-		  (save-match-data (org-table-analyze))
-		  (aref org-table-hlines
-			(- (match-end 1) (match-beginning 1)))))
+      (let ((line
+	     (condition-case _
+		 (progn
+		   (save-match-data (org-table-analyze))
+		   (aref org-table-hlines
+			 (- (match-end 1) (match-beginning 1))))
+	       (error
+		(error "Invalid table line specification %S" table-line-pos))))
 	    (delta (string-to-number (match-string 2 table-line-pos))))
-	;; The user wants a special position in the table
-	(unless ll
-	  (error "Invalid table line specification \"%s\"" table-line-pos))
-	(goto-char org-table-current-begin-pos)
-	(forward-line (+ ll delta (if (< delta 0) 0 -1)))
-	(org-table-insert-row 'below)
-	(beginning-of-line 1)
-	(delete-region (point) (1+ (point-at-eol)))
-	(setq beg (point))
-	(insert txt)
-	(setq end (point))))
+	(forward-line (+ line delta (if (< delta 0) 0 -1)))
+	(forward-line)))		;insert below
      ((org-capture-get :prepend)
       (goto-char (point-min))
-      (re-search-forward org-table-hline-regexp nil t)
-      (beginning-of-line 1)
-      (re-search-forward org-table-dataline-regexp nil t)
-      (beginning-of-line 1)
-      (setq beg (point))
-      (org-table-insert-row)
-      (beginning-of-line 1)
-      (delete-region (point) (1+ (point-at-eol)))
-      (insert txt)
-      (setq end (point)))
+      (cond
+       ((not (re-search-forward org-table-hline-regexp nil t)))
+       ((re-search-forward org-table-dataline-regexp nil t) (beginning-of-line))
+       (t (goto-char (org-table-end)))))
      (t
-      (goto-char (point-max))
-      (re-search-backward org-table-dataline-regexp nil t)
-      (beginning-of-line 1)
-      (org-table-insert-row 'below)
-      (beginning-of-line 1)
-      (delete-region (point) (1+ (point-at-eol)))
-      (setq beg (point))
-      (insert txt)
-      (setq end (point))))
-    (goto-char beg)
-    (org-capture-position-for-last-stored 'table-line)
-    (if (or (re-search-backward "%\\?" beg t)
-	    (re-search-forward "%\\?" end t))
-	(replace-match ""))
+      (goto-char (org-table-end))))
+    ;; Insert text and position point according to template.
+    (unless (bolp) (insert "\n"))
+    (let ((beg (point))
+	  (end (save-excursion
+		 (insert text)
+		 (point))))
+      (org-capture-position-for-last-stored 'table-line)
+      (org-capture-mark-kill-region beg end)
+      (org-capture-narrow beg end)
+      (when (or (re-search-backward "%\\?" beg t)
+		(re-search-forward "%\\?" end t))
+	(replace-match "")))
     (org-table-align)))
 
 (defun org-capture-place-plain-text ()
@@ -1300,14 +1317,14 @@ Of course, if exact position has been required, just put it there."
     (setq end (point))
     (org-capture-mark-kill-region beg (1- end))
     (org-capture-narrow beg (1- end))
-    (if (or (re-search-backward "%\\?" beg t)
-	    (re-search-forward "%\\?" end t))
-	(replace-match ""))))
+    (when (or (re-search-backward "%\\?" beg t)
+	      (re-search-forward "%\\?" end t))
+      (replace-match ""))))
 
 (defun org-capture-mark-kill-region (beg end)
   "Mark the region that will have to be killed when aborting capture."
-  (let ((m1 (move-marker (make-marker) beg))
-	(m2 (move-marker (make-marker) end)))
+  (let ((m1 (copy-marker beg))
+	(m2 (copy-marker end t)))
     (org-capture-put :begin-marker m1)
     (org-capture-put :end-marker m2)))
 
@@ -1359,7 +1376,7 @@ Point will be after the empty lines, so insertion can directly be done."
   (let ((pos (point)))
     (org-back-over-empty-lines)
     (delete-region (point) pos)
-    (if (> n 0) (newline n))))
+    (when (> n 0) (newline n))))
 
 (defun org-capture-empty-lines-after (&optional n)
   "Set the correct number of empty lines after the inserted string.
@@ -1369,7 +1386,7 @@ Point will remain at the first line after the inserted text."
   (org-back-over-empty-lines)
   (while (looking-at "[ \t]*\n") (replace-match ""))
   (let ((pos (point)))
-    (if (> n 0) (newline n))
+    (when (> n 0) (newline n))
     (goto-char pos)))
 
 (defvar org-clock-marker) ; Defined in org.el
@@ -1459,94 +1476,6 @@ Use PREFIX as a prefix for the name of the indirect buffer."
   (unless (org-kill-is-subtree-p tree)
     (error "Template is not a valid Org entry or tree")))
 
-(defun org-mks (table title &optional prompt specials)
-  "Select a member of an alist with multiple keys.
-
-TABLE is the alist which should contain entries where the car is a string.
-There should be two types of entries.
-
-1. prefix descriptions like (\"a\" \"Description\")
-   This indicates that `a' is a prefix key for multi-letter selection, and
-   that there are entries following with keys like \"ab\", \"ax\"...
-
-2. Select-able members must have more than two elements, with the first
-   being the string of keys that lead to selecting it, and the second a
-   short description string of the item.
-
-The command will then make a temporary buffer listing all entries
-that can be selected with a single key, and all the single key
-prefixes.  When you press the key for a single-letter entry, it is selected.
-When you press a prefix key, the commands (and maybe further prefixes)
-under this key will be shown and offered for selection.
-
-TITLE will be placed over the selection in the temporary buffer,
-PROMPT will be used when prompting for a key.  SPECIAL is an
-alist with (\"key\" \"description\") entries.  When one of these
-is selected, only the bare key is returned."
-  (save-window-excursion
-    (let ((inhibit-quit t)
-	  (buffer (org-switch-to-buffer-other-window "*Org Select*"))
-	  (prompt (or prompt "Select: "))
-	  current)
-      (unwind-protect
-	  (catch 'exit
-	    (while t
-	      (erase-buffer)
-	      (insert title "\n\n")
-	      (let ((des-keys nil)
-		    (allowed-keys '("\C-g"))
-		    (cursor-type nil))
-		;; Populate allowed keys and descriptions keys
-		;; available with CURRENT selector.
-		(let ((re (format "\\`%s\\(.\\)\\'"
-				  (if current (regexp-quote current) "")))
-		      (prefix (if current (concat current " ") "")))
-		  (dolist (entry table)
-		    (pcase entry
-		      ;; Description.
-		      (`(,(and key (pred (string-match re))) ,desc)
-		       (let ((k (match-string 1 key)))
-			 (push k des-keys)
-			 (push k allowed-keys)
-			 (insert prefix "[" k "]" "..." "  " desc "..." "\n")))
-		      ;; Usable entry.
-		      (`(,(and key (pred (string-match re))) ,desc . ,_)
-		       (let ((k (match-string 1 key)))
-			 (insert prefix "[" k "]" "     " desc "\n")
-			 (push k allowed-keys)))
-		      (_ nil))))
-		;; Insert special entries, if any.
-		(when specials
-		  (insert "----------------------------------------------------\
----------------------------\n")
-		  (pcase-dolist (`(,key ,description) specials)
-		    (insert (format "[%s]     %s\n" key description))
-		    (push key allowed-keys)))
-		;; Display UI and let user select an entry or
-		;; a sub-level prefix.
-		(goto-char (point-min))
-		(unless (pos-visible-in-window-p (point-max))
-		  (org-fit-window-to-buffer))
-		(message prompt)
-		(let ((pressed (char-to-string (read-char-exclusive))))
-		  (while (not (member pressed allowed-keys))
-		    (message "Invalid key `%s'" pressed) (sit-for 1)
-		    (message prompt)
-		    (setq pressed (char-to-string (read-char-exclusive))))
-		  (setq current (concat current pressed))
-		  (cond
-		   ((equal pressed "\C-g") (user-error "Abort"))
-		   ;; Selection is a prefix: open a new menu.
-		   ((member pressed des-keys))
-		   ;; Selection matches an association: return it.
-		   ((let ((entry (assoc current table)))
-		      (and entry (throw 'exit entry))))
-		   ;; Selection matches a special entry: return the
-		   ;; selection prefix.
-		   ((assoc current specials) (throw 'exit current))
-		   (t (error "No entry available")))))))
-	(when buffer (kill-buffer buffer))))))
-
 ;;; The template code
 (defun org-capture-select-template (&optional keys)
   "Select a capture template.
@@ -1587,7 +1516,8 @@ The template may still contain \"%?\" for cursor positioning."
 	 (v-c (and kill-ring (current-kill 0)))
 	 (v-x (or (org-get-x-clipboard 'PRIMARY)
 		  (org-get-x-clipboard 'CLIPBOARD)
-		  (org-get-x-clipboard 'SECONDARY)))
+		  (org-get-x-clipboard 'SECONDARY)
+		  ""))			;ensure it is a string
 	 ;; `initial' and `annotation' might have been passed.  But if
 	 ;; the property list has them, we prefer those values.
 	 (v-i (or (plist-get org-store-link-plist :initial)
@@ -1764,9 +1694,7 @@ The template may still contain \"%?\" for cursor positioning."
 			 (unless (eq (char-before) ?:) (insert ":"))
 			 (insert ins)
 			 (unless (eq (char-after) ?:) (insert ":"))
-			 (and (org-at-heading-p)
-			      (let ((org-ignore-region t))
-				(org-set-tags nil 'align))))))
+			 (when (org-at-heading-p) (org-align-tags)))))
 		    ((or "C" "L")
 		     (let ((insert-fun (if (equal key "C") #'insert
 					 (lambda (s) (org-insert-link 0 s)))))
@@ -1781,25 +1709,63 @@ The template may still contain \"%?\" for cursor positioning."
 						first-value)))
 			 (_ (error "Invalid `org-capture--clipboards' value: %S"
 				   org-capture--clipboards)))))
-		    ("p" (org-set-property prompt nil))
-		    ((guard key)
+		    ("p"
+		     ;; We remove file properties inherited from
+		     ;; target buffer so `org-read-property-value' has
+		     ;; a chance to find allowed values in sub-trees
+		     ;; from the target buffer.
+		     (setq-local org-file-properties nil)
+		     (let* ((origin (set-marker (make-marker)
+						(org-capture-get :pos)
+						(org-capture-get :buffer)))
+			    ;; Find location from where to get allowed
+			    ;; values.  If `:target-entry-p' is
+			    ;; non-nil, the current headline in the
+			    ;; target buffer is going to be a parent
+			    ;; headline, so location is fine.
+			    ;; Otherwise, find the parent headline in
+			    ;; the target buffer.
+			    (pom (if (org-capture-get :target-entry-p) origin
+				   (let ((level (progn
+						  (while (org-up-heading-safe))
+						  (org-current-level))))
+				     (org-with-point-at origin
+				       (let ((l (if (org-at-heading-p)
+						    (org-current-level)
+						  most-positive-fixnum)))
+					 (while (and l (>= l level))
+					   (setq l (org-up-heading-safe)))
+					 (if l (point-marker)
+					   (point-min-marker)))))))
+			    (value (org-read-property-value prompt pom)))
+		       (org-set-property prompt value)))
+		    ((or "t" "T" "u" "U")
 		     ;; These are the date/time related ones.
 		     (let* ((upcase? (equal (upcase key) key))
-			    (org-time-was-given upcase?)
-			    (org-end-time-was-given)
+			    (org-end-time-was-given nil)
 			    (time (org-read-date upcase? t nil prompt)))
 		       (org-insert-time-stamp
-			time org-time-was-given
+			time (or org-time-was-given upcase?)
 			(member key '("u" "U"))
 			nil nil (list org-end-time-was-given))))
-		    (_
+		    (`nil
+		     ;; Load history list for current prompt.
+		     (setq org-capture--prompt-history
+			   (gethash prompt org-capture--prompt-history-table))
 		     (push (org-completing-read
 			    (concat (or prompt "Enter string")
 				    (and default (format " [%s]" default))
 				    ": ")
-			    completions nil nil nil nil default)
+			    completions
+			    nil nil nil 'org-capture--prompt-history default)
 			   strings)
-		     (insert (car strings)))))))))
+		     (insert (car strings))
+		     ;; Save updated history list for current prompt.
+		     (puthash prompt org-capture--prompt-history
+			      org-capture--prompt-history-table))
+		    (_
+		     (error "Unknown template placeholder: \"%%^%s\""
+			    key))))))))
 
 	;; Replace %n escapes with nth %^{...} string.
 	(setq strings (nreverse strings))
@@ -1811,13 +1777,13 @@ The template may still contain \"%?\" for cursor positioning."
 	       nil t)))))
 
       ;; Make sure there are no empty lines before the text, and that
-      ;; it ends with a newline character.
+      ;; it ends with a newline character or it is empty.
       (skip-chars-forward " \t\n")
       (delete-region (point-min) (line-beginning-position))
       (goto-char (point-max))
       (skip-chars-backward " \t\n")
       (delete-region (point) (point-max))
-      (insert "\n")
+      (unless (bobp) (insert "\n"))
 
       ;; Return the expanded template and kill the capture buffer.
       (untabify (point-min) (point-max))
@@ -1925,9 +1891,9 @@ Assume sexps have been marked with
 		 (setq jump-to-captured t))
 
 	       (append (list key desc type target template)
-		       (if prepend '(:prepend t))
-		       (if immediate '(:immediate-finish t))
-		       (if jump-to-captured '(:jump-to-captured t)))))
+		       (and prepend '(:prepend t))
+		       (and immediate '(:immediate-finish t))
+		       (and jump-to-captured '(:jump-to-captured t)))))
 
 	   org-remember-templates))))
 

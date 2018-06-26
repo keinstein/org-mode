@@ -127,7 +127,212 @@
 			    (buffer-substring-no-properties
 			     (line-beginning-position)
 			     (line-end-position))))))
-	  (catch :return (org-capture-refile))))))))
+	  (catch :return (org-capture-refile)))))))
+  ;; When the entry is refiled, `:jump-to-captured' moves point to the
+  ;; refile location, not the initial capture target.
+  (should
+   (org-test-with-temp-text-in-file "* Refile target"
+     (let ((file1 (buffer-file-name)))
+       (org-test-with-temp-text-in-file "* A"
+	 (let* ((file2 (buffer-file-name))
+		(org-capture-templates
+		 `(("t" "Todo" entry (file+headline ,file2 "A")
+		    "** H1 %?" :jump-to-captured t))))
+	   (org-capture nil "t")
+	   (cl-letf (((symbol-function 'org-refile-get-location)
+		      (lambda (&rest args)
+			(list (file-name-nondirectory file1) file1 nil nil))))
+	     (org-capture-refile)
+	     (list file1 file2 (buffer-file-name)))))))))
+
+(ert-deftest test-org-capture/insert-at-end-abort ()
+  "Test that capture can be aborted after inserting at end of capture buffer."
+  (should
+   (equal
+    "* A\n* B\n"
+    (org-test-with-temp-text-in-file "* A\n* B\n"
+      (let* ((file (buffer-file-name))
+	     (org-capture-templates
+	      `(("t" "Todo" entry (file+headline ,file "A") "** H1 %?"))))
+	(org-capture nil "t")
+	(goto-char (point-max))
+	(insert "Capture text")
+	(org-capture-kill))
+      (buffer-string)))))
+
+(ert-deftest test-org-capture/table-line ()
+  "Test `table-line' type in capture template."
+  ;; When a only file is specified, use the first table available.
+  (should
+   (equal "Text
+
+| a |
+| x |
+
+| b |"
+	  (org-test-with-temp-text-in-file "Text\n\n| a |\n\n| b |"
+	    (let* ((file (buffer-file-name))
+		   (org-capture-templates
+		    `(("t" "Table" table-line (file ,file) "| x |"
+		       :immediate-finish t))))
+	      (org-capture nil "t"))
+	    (buffer-string))))
+  ;; When an entry is specified, find the first table in the
+  ;; corresponding section.
+  (should
+   (equal "* Foo
+| a |
+* Inbox
+| b |
+| x |
+"
+	  (org-test-with-temp-text-in-file "* Foo\n| a |\n* Inbox\n| b |\n"
+	    (let* ((file (buffer-file-name))
+		   (org-capture-templates
+		    `(("t" "Table" table-line (file+headline ,file "Inbox")
+		       "| x |" :immediate-finish t))))
+	      (org-capture nil "t"))
+	    (buffer-string))))
+  (should
+   (equal "* Inbox
+| a |
+| x |
+
+| b |
+"
+	  (org-test-with-temp-text-in-file "* Inbox\n| a |\n\n| b |\n"
+	    (let* ((file (buffer-file-name))
+		   (org-capture-templates
+		    `(("t" "Table" table-line (file+headline ,file "Inbox")
+		       "| x |" :immediate-finish t))))
+	      (org-capture nil "t"))
+	    (buffer-string))))
+  ;; When a precise location is specified, find the first table after
+  ;; point, down to the end of the section.
+  (should
+   (equal "| a |
+
+
+| b |
+| x |
+"
+	  (org-test-with-temp-text-in-file "| a |\n\n\n| b |\n"
+	    (let* ((file (buffer-file-name))
+		   (org-capture-templates
+		    `(("t" "Table" table-line (file+function ,file forward-line)
+		       "| x |" :immediate-finish t))))
+	      (org-capture nil "t"))
+	    (buffer-string))))
+  ;; Create a new table with an empty header when none can be found.
+  (should
+   (equal "|   |   |\n|---+---|\n| a | b |\n"
+	  (org-test-with-temp-text-in-file ""
+	    (let* ((file (buffer-file-name))
+		   (org-capture-templates
+		    `(("t" "Table" table-line (file ,file) "| a | b |"
+		       :immediate-finish t))))
+	      (org-capture nil "t"))
+	    (buffer-string))))
+  ;; Properly insert row with formulas.
+  (should
+   (equal "| 1 |\n| 2 |\n#+TBLFM: "
+	  (org-test-with-temp-text-in-file "| 1 |\n#+TBLFM: "
+	    (let* ((file (buffer-file-name))
+		   (org-capture-templates
+		    `(("t" "Table" table-line (file ,file)
+		       "| 2 |" :immediate-finish t))))
+	      (org-capture nil "t"))
+	    (buffer-string))))
+  ;; When `:prepend' is nil, add the row at the end of the table.
+  (should
+   (equal "| a |\n| x |\n"
+	  (org-test-with-temp-text-in-file "| a |"
+	    (let* ((file (buffer-file-name))
+		   (org-capture-templates
+		    `(("t" "Table" table-line (file ,file)
+		       "| x |" :immediate-finish t))))
+	      (org-capture nil "t"))
+	    (buffer-string))))
+  ;; When `:prepend' is non-nil, add it as the first row after the
+  ;; header, if there is one, or the first row otherwise.
+  (should
+   (equal "| a |\n|---|\n| x |\n| b |"
+	  (org-test-with-temp-text-in-file "| a |\n|---|\n| b |"
+	    (let* ((file (buffer-file-name))
+		   (org-capture-templates
+		    `(("t" "Table" table-line (file ,file)
+		       "| x |" :immediate-finish t :prepend t))))
+	      (org-capture nil "t"))
+	    (buffer-string))))
+  (should
+   (equal "| x |\n| a |"
+	  (org-test-with-temp-text-in-file "| a |"
+	    (let* ((file (buffer-file-name))
+		   (org-capture-templates
+		    `(("t" "Table" table-line (file ,file)
+		       "| x |" :immediate-finish t :prepend t))))
+	      (org-capture nil "t"))
+	    (buffer-string))))
+  ;; When `:table-line-pos' is set and is meaningful, obey it.
+  (should
+   (equal "| a |\n|---|\n| b |\n| x |\n|---|\n| c |"
+	  (org-test-with-temp-text-in-file "| a |\n|---|\n| b |\n|---|\n| c |"
+	    (let* ((file (buffer-file-name))
+		   (org-capture-templates
+		    `(("t" "Table" table-line (file ,file)
+		       "| x |" :immediate-finish t :table-line-pos "II-1"))))
+	      (org-capture nil "t"))
+	    (buffer-string))))
+  (should
+   (equal "| a |\n|---|\n| x |\n| b |\n|---|\n| c |"
+	  (org-test-with-temp-text-in-file "| a |\n|---|\n| b |\n|---|\n| c |"
+	    (let* ((file (buffer-file-name))
+		   (org-capture-templates
+		    `(("t" "Table" table-line (file ,file)
+		       "| x |" :immediate-finish t :table-line-pos "I+1"))))
+	      (org-capture nil "t"))
+	    (buffer-string))))
+  ;; Throw an error on invalid `:table-line-pos' specifications.
+  (should-error
+   (org-test-with-temp-text-in-file "| a |"
+     (let* ((file (buffer-file-name))
+	    (org-capture-templates
+	     `(("t" "Table" table-line (file ,file)
+		"| x |" :immediate-finish t :table-line-pos "II+99"))))
+       (org-capture nil "t")
+       t)))
+  ;; Update formula when capturing one or more rows.
+  (should
+   (equal
+    '(("@3$1" . "9"))
+    (org-test-with-temp-text-in-file "| 1 |\n|---|\n| 9 |\n#+tblfm: @2$1=9"
+      (let* ((file (buffer-file-name))
+	     (org-capture-templates
+	      `(("t" "Table" table-line (file ,file)
+		 "| 2 |" :immediate-finish t :table-line-pos "I-1"))))
+	(org-capture nil "t")
+	(org-table-get-stored-formulas)))))
+  (should
+   (equal
+    '(("@4$1" . "9"))
+    (org-test-with-temp-text-in-file "| 1 |\n|---|\n| 9 |\n#+tblfm: @2$1=9"
+      (let* ((file (buffer-file-name))
+	     (org-capture-templates
+	      `(("t" "Table" table-line (file ,file)
+		 "| 2 |\n| 3 |" :immediate-finish t :table-line-pos "I-1"))))
+	(org-capture nil "t")
+	(org-table-get-stored-formulas)))))
+  ;; Do not update formula when cell in inserted below affected row.
+  (should-not
+   (equal
+    '(("@3$1" . "9"))
+    (org-test-with-temp-text-in-file "| 1 |\n|---|\n| 9 |\n#+tblfm: @2$1=9"
+      (let* ((file (buffer-file-name))
+	     (org-capture-templates
+	      `(("t" "Table" table-line (file ,file)
+		 "| 2 |" :immediate-finish t))))
+	(org-capture nil "t")
+	(org-table-get-stored-formulas))))))
 
 
 (provide 'test-org-capture)

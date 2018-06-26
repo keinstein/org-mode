@@ -1,6 +1,6 @@
 ;;; test-org-list.el --- Tests for org-list.el
 
-;; Copyright (C) 2012, 2013, 2014  Nicolas Goaziou
+;; Copyright (C) 2012, 2013, 2014, 2018  Nicolas Goaziou
 
 ;; Author: Nicolas Goaziou <n.goaziou at gmail dot com>
 
@@ -220,69 +220,73 @@
 
 (ert-deftest test-org-list/indent-item ()
   "Test `org-indent-item' specifications."
-  ;; 1. Error when not at an item.
+  ;; Error when not at an item.
   (org-test-with-temp-text "Paragraph."
     (should-error (org-indent-item)))
-  ;; 2. Error when trying to move first item of a list.
-  (org-test-with-temp-text "
+  ;; Error when trying to move first item of a list.
+  (should-error
+   (org-test-with-temp-text "
 - Item 1
 - Item 2"
-    (forward-line)
-    (should-error (org-indent-item)))
-  ;; 3. Indent a single item, not its children.
-  (org-test-with-temp-text "
+     (forward-line)
+     (org-indent-item)))
+  (should-error
+   (org-test-with-temp-text "
 - Item 1
-- Item 2
-  - Item 2.1"
-    (search-forward "- Item 2")
-    (let (org-list-demote-modify-bullet) (org-indent-item))
-    (should (equal (buffer-string)
-		   "
+- Item 2"
+     (forward-line)
+     (let ((org-list-automatic-rules nil)) (org-indent-item))))
+  ;; Indent a single item, not its children.
+  (should
+   (equal "
 - Item 1
   - Item 2
-  - Item 2.1")))
-  ;; 4. Follow `org-list-demote-modify-bullet' specifications.
-  ;;
-  ;; 4.1. With unordered lists.
-  (org-test-with-temp-text "
+  - Item 2.1"
+	  (org-test-with-temp-text "
 - Item 1
-- Item 2"
-    (search-forward "- Item 2")
-    (let ((org-list-demote-modify-bullet '(("-" . "+")))) (org-indent-item))
-    (should (equal (buffer-string)
-		   "
+- Item 2<point>
+  - Item 2.1"
+	    (let (org-list-demote-modify-bullet) (org-indent-item))
+	    (buffer-string))))
+  ;; Follow `org-list-demote-modify-bullet' specifications.
+  (should
+   (equal "
 - Item 1
-  + Item 2")))
-  ;; 4.2. and ordered lists.
-  (org-test-with-temp-text "
+  + Item 2"
+	  (org-test-with-temp-text "
+- Item 1
+- Item 2<point>"
+	    (let ((org-list-demote-modify-bullet '(("-" . "+"))))
+	      (org-indent-item))
+	    (buffer-string))))
+  (should
+   (equal "
 1. Item 1
-2. Item 2"
-    (search-forward "2. Item 2")
-    (let ((org-plain-list-ordered-item-terminator t)
-	  (org-list-demote-modify-bullet '(("1." . "+"))))
-      (org-indent-item))
-    (should (equal (buffer-string)
-		   "
+   + Item 2"
+	  (org-test-with-temp-text "
 1. Item 1
-   + Item 2")))
-  ;; 5. When a region is selected, indent every item within.
-  (org-test-with-temp-text "
-- Item 1
-- Item 2
-- Item 3
-"
-    (search-forward "- Item 2")
-    (beginning-of-line)
-    (transient-mark-mode 1)
-    (push-mark (point) t t)
-    (goto-char (point-max))
-    (let (org-list-demote-modify-bullet) (org-indent-item))
-    (should (equal (buffer-string)
-		   "
+2. Item 2<point>"
+	    (let ((org-plain-list-ordered-item-terminator t)
+		  (org-list-demote-modify-bullet '(("1." . "+"))))
+	      (org-indent-item))
+	    (buffer-string))))
+  ;; When a region is selected, indent every item within.
+  (should
+   (equal "
 - Item 1
   - Item 2
   - Item 3
-"))))
+"
+	  (org-test-with-temp-text "
+- Item 1
+<point>- Item 2
+- Item 3
+"
+	    (transient-mark-mode 1)
+	    (push-mark (point) t t)
+	    (goto-char (point-max))
+	    (let (org-list-demote-modify-bullet) (org-indent-item))
+	    (buffer-string)))))
 
 (ert-deftest test-org-list/indent-item-tree ()
   "Test `org-indent-item-tree' specifications."
@@ -937,6 +941,24 @@
 	  (org-test-with-temp-text "* TODO line"
 	    (org-toggle-item nil)
 	    (buffer-string))))
+  ;; When turning headlines into items, make sure planning info line
+  ;; and properties drawers are removed.  This also includes empty
+  ;; lines following them.
+  (should
+   (equal "- H\n"
+	  (org-test-with-temp-text "* H\nSCHEDULED: <2012-03-29 Thu>"
+	    (org-toggle-item nil)
+	    (buffer-string))))
+  (should
+   (equal "- H\n"
+	  (org-test-with-temp-text "* H\n:PROPERTIES:\n:A: 1\n:END:"
+	    (org-toggle-item nil)
+	    (buffer-string))))
+  (should
+   (equal "- H\nText"
+	  (org-test-with-temp-text "* H\n:PROPERTIES:\n:A: 1\n:END:\n\n\nText"
+	    (org-toggle-item nil)
+	    (buffer-string))))
   ;; When a region is marked and first line is a headline, all
   ;; headlines are turned into items.
   (should
@@ -1015,16 +1037,32 @@
 (ert-deftest test-org-list/sort ()
   "Test `org-sort-list'."
   ;; Sort alphabetically.
-  (should
-   (equal "- abc\n- def\n- xyz\n"
-	  (org-test-with-temp-text "- def\n- xyz\n- abc\n"
-	    (org-sort-list nil ?a)
-	    (buffer-string))))
-  (should
-   (equal "- xyz\n- def\n- abc\n"
-	  (org-test-with-temp-text "- def\n- xyz\n- abc\n"
-	    (org-sort-list nil ?A)
-	    (buffer-string))))
+  (let ((original-string-collate-lessp (symbol-function 'string-collate-lessp)))
+    (cl-letf (((symbol-function 'string-collate-lessp)
+	       (lambda (s1 s2 &optional locale ignore-case)
+		 (funcall original-string-collate-lessp
+			  s1 s2 "C" ignore-case))))
+      (should
+       (equal "- abc\n- def\n- XYZ\n"
+	      (org-test-with-temp-text "- def\n- XYZ\n- abc\n"
+		(org-sort-list nil ?a)
+		(buffer-string))))
+      (should
+       (equal "- XYZ\n- def\n- abc\n"
+	      (org-test-with-temp-text "- def\n- XYZ\n- abc\n"
+		(org-sort-list nil ?A)
+		(buffer-string))))
+      ;; Sort alphabetically (with case).
+      (should
+       (equal "- C\n- a\n- b\n"
+	      (org-test-with-temp-text "- b\n- C\n- a\n"
+		(org-sort-list t ?a)
+		(buffer-string))))
+      (should
+       (equal "- b\n- a\n- C\n"
+	      (org-test-with-temp-text "- b\n- C\n- a\n"
+		(org-sort-list t ?A)
+		(buffer-string))))))
   ;; Sort numerically.
   (should
    (equal "- 1\n- 2\n- 10\n"
@@ -1081,59 +1119,7 @@
 	    (buffer-string)))))
 
 
-;;; Radio Lists
-
-(ert-deftest test-org-list/send-list ()
-  "Test various checks for `org-list-send-list'."
-  ;; Error when not at a list item.
-  (should-error
-   (org-test-with-temp-text "Not a list item"
-     (org-list-send-list)))
-  ;; Error when ORGLST line is not provided.
-  (should-error
-   (org-test-with-temp-text "- item"
-     (org-list-send-list)))
-  ;; Error when transformation function is unknown.
-  (should-error
-   (org-test-with-temp-text "@ignore
-#+ORGLST: SEND list unknown-function
-- item
-@end ignore"
-     (forward-line 2)
-     (org-list-send-list)))
-  ;; Error when receiving location is not defined.
-  (should-error
-   (org-test-with-temp-text "@ignore
-#+ORGLST: SEND list org-list-to-texinfo
-- item
-@end ignore"
-     (forward-line 2)
-     (org-list-send-list)))
-  ;; Error when insertion region is ill-formed.
-  (should-error
-   (org-test-with-temp-text "@c BEGIN RECEIVE ORGLST list
-@ignore
-#+ORGLST: SEND list org-list-to-texinfo
-- item
-@end ignore"
-     (forward-line 3)
-     (org-list-send-list)))
-  ;; Allow multiple receiver locations.
-  (should
-   (org-test-with-temp-text "
-@c BEGIN RECEIVE ORGLST list
-@c END RECEIVE ORGLST list
-
-@ignore
-#+ORGLST: SEND list org-list-to-texinfo
-<point>- item contents
-@end ignore
-
-@c BEGIN RECEIVE ORGLST list
-@c END RECEIVE ORGLST list"
-     (org-list-send-list)
-     (goto-char (point-min))
-     (search-forward "item contents" nil t 3))))
+;;; List transformations
 
 (ert-deftest test-org-list/to-generic ()
   "Test `org-list-to-generic' specifications."
@@ -1349,71 +1335,22 @@
   "Test `org-list-to-html' specifications."
   (should
    (equal "<ul class=\"org-ul\">\n<li>a</li>\n</ul>"
-	  (let (org-html-indent)
-	    (with-temp-buffer
-	      (insert "<!-- BEGIN RECEIVE ORGLST name -->
-<!-- END RECEIVE ORGLST name -->
-<!--
-#+ORGLST: SEND name org-list-to-html
-- a
--->")
-	      (goto-char (point-min))
-	      (re-search-forward "^- a" nil t)
-	      (beginning-of-line)
-	      (org-list-send-list)
-	      (goto-line 2)
-	      (buffer-substring-no-properties
-	       (point)
-	       (progn (re-search-forward "^<!-- END" nil t)
-		      (beginning-of-line)
-		      (skip-chars-backward " \r\t\n")
-		      (point))))))))
+	  (org-test-with-temp-text "- a"
+	    (org-list-to-html (org-list-to-lisp) nil)))))
 
 (ert-deftest test-org-list/to-latex ()
   "Test `org-list-to-latex' specifications."
   (should
    (equal "\\begin{itemize}\n\\item a\n\\end{itemize}"
-	  (with-temp-buffer
-	    (insert "% BEGIN RECEIVE ORGLST name
-% END RECEIVE ORGLST name
-\\begin{comment}
-#+ORGLST: SEND name org-list-to-latex
-- a
-\\end{comment}")
-	    (goto-char (point-min))
-	    (re-search-forward "^- a" nil t)
-	    (beginning-of-line)
-	    (org-list-send-list)
-	    (goto-line 2)
-	    (buffer-substring-no-properties
-	     (point)
-	     (progn (re-search-forward "^% END" nil t)
-		    (beginning-of-line)
-		    (skip-chars-backward " \r\t\n")
-		    (point)))))))
+	  (org-test-with-temp-text "- a"
+	    (org-list-to-latex (org-list-to-lisp) nil)))))
 
 (ert-deftest test-org-list/to-texinfo ()
   "Test `org-list-to-texinfo' specifications."
   (should
    (equal "@itemize\n@item\na\n@end itemize"
-	  (with-temp-buffer
-	    (insert "@c BEGIN RECEIVE ORGLST name
-@c END RECEIVE ORGLST name
-@ignore
-#+ORGLST: SEND name org-list-to-texinfo
-- a
-@end ignore")
-	    (goto-char (point-min))
-	    (re-search-forward "^- a" nil t)
-	    (beginning-of-line)
-	    (org-list-send-list)
-	    (goto-line 2)
-	    (buffer-substring-no-properties
-	     (point)
-	     (progn (re-search-forward "^@c END" nil t)
-		    (beginning-of-line)
-		    (skip-chars-backward " \r\t\n")
-		    (point)))))))
+	  (org-test-with-temp-text "- a"
+	    (org-list-to-texinfo (org-list-to-lisp) nil)))))
 
 (ert-deftest test-org-list/to-org ()
   "Test `org-list-to-org' specifications."

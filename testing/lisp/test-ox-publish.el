@@ -94,7 +94,6 @@ Unless set otherwise in PROPERTIES, `:base-directory' is set to
 		      (cl-remove-if #'file-directory-p
 				    (directory-files dir))))))))
 
-
 
 ;;; Site-map
 
@@ -328,6 +327,70 @@ Unless set otherwise in PROPERTIES, `:base-directory' is set to
 		(buffer-string)))))))
 
 
+;;; Cross references
+
+(ert-deftest test-org-publish/resolve-external-link ()
+  "Test `org-publish-resolve-external-link' specifications."
+  ;; Function should preserve internal reference when used between
+  ;; published files.
+  (should
+   (apply
+    #'equal
+    (let* ((ids nil)
+	   (backend
+	    (org-export-create-backend
+	     :transcoders
+	     '((headline . (lambda (h c i)
+			     (concat (org-export-get-reference h i) " " c)))
+	       (paragraph . (lambda (p c i) c))
+	       (section . (lambda (s c i) c))
+	       (link . (lambda (l c i)
+			 (let ((option (org-element-property :search-option l))
+			       (path (org-element-property :path l)))
+			   (and option
+				(org-publish-resolve-external-link
+				 option path))))))))
+	   (publish
+	    (lambda (plist filename pub-dir)
+	      (org-publish-org-to backend filename ".test" plist pub-dir))))
+      (org-test-publish
+	  (list :publishing-function (list publish))
+	(lambda (dir)
+	  (cl-subseq
+	   (split-string
+	    (mapconcat (lambda (f) (org-file-contents (expand-file-name f dir)))
+		       (directory-files dir nil "\\.test\\'")
+		       " "))
+	   1 3))))))
+  ;; When optional argument PREFER-CUSTOM is non-nil, use custom ID
+  ;; instead of internal reference, whenever possible.
+  (should
+   (equal
+    '("a1" "b1")
+    (let* ((ids nil)
+	   (link-transcoder
+	    (lambda (l c i)
+	      (let ((option (org-element-property :search-option l))
+		    (path (org-element-property :path l)))
+		(push (org-publish-resolve-external-link option path t)
+		      ids)
+		"")))
+	   (backend
+	    (org-export-create-backend
+	     :transcoders `((headline . (lambda (h c i) c))
+			    (paragraph . (lambda (p c i) c))
+			    (section . (lambda (s c i) c))
+			    (link . ,link-transcoder))))
+	   (publish
+	    (lambda (plist filename pub-dir)
+	      (org-publish-org-to backend filename ".test" plist pub-dir))))
+      (org-test-publish (list :publishing-function (list publish)
+			      :exclude "."
+			      :include '("a.org" "b.org"))
+	#'ignore)
+      (sort ids #'string<)))))
+
+
 ;;; Tools
 
 (ert-deftest test-org-publish/get-project-from-filename ()
@@ -352,7 +415,8 @@ Unless set otherwise in PROPERTIES, `:base-directory' is set to
 		 (file (expand-file-name "a.org" base))
 		 (org-publish-project-alist
 		  `(("p1" :base-directory "/other/")
-		    ("p2" :base-directory ,base))))
+		    ("p2" :base-directory ,base)
+		    ("p3" :base-directory ,base))))
 	    (car (org-publish-get-project-from-filename file)))))
   ;; When :recursive in non-nil, allow files in sub-directories.
   (should
@@ -364,6 +428,19 @@ Unless set otherwise in PROPERTIES, `:base-directory' is set to
   (should-not
    (let* ((base (expand-file-name "examples/pub/" org-test-dir))
 	  (file (expand-file-name "sub/c.org" base))
+	  (org-publish-project-alist
+	   `(("p" :base-directory ,base :recursive nil))))
+     (org-publish-get-project-from-filename file)))
+  ;; Also, when :recursive is non-nil, follow symlinks to directories.
+  (should
+   (let* ((base (expand-file-name "examples/pub/" org-test-dir))
+	  (file (expand-file-name "link/link.org" base))
+	  (org-publish-project-alist
+	   `(("p" :base-directory ,base :recursive t))))
+     (org-publish-get-project-from-filename file)))
+  (should-not
+   (let* ((base (expand-file-name "examples/pub/" org-test-dir))
+	  (file (expand-file-name "link/link.org" base))
 	  (org-publish-project-alist
 	   `(("p" :base-directory ,base :recursive nil))))
      (org-publish-get-project-from-filename file)))
@@ -394,6 +471,13 @@ Unless set otherwise in PROPERTIES, `:base-directory' is set to
 	  (org-publish-project-alist
 	   `(("p" :base-directory ,base :base-extension any))))
      (org-publish-get-project-from-filename file)))
+  ;; Pathological case: Handle both :extension any and :recursive t.
+  (should
+   (let* ((base (expand-file-name "examples/pub/" org-test-dir))
+	  (file (expand-file-name "sub/c.org" base))
+	  (org-publish-project-alist
+	   `(("p" :base-directory ,base :recursive t :base-extension any))))
+     (org-publish-get-base-files (org-publish-get-project-from-filename file))))
   ;; Check :exclude property.
   (should-not
    (let* ((base (expand-file-name "examples/pub/" org-test-dir))
@@ -441,6 +525,33 @@ Unless set otherwise in PROPERTIES, `:base-directory' is set to
 		  `(("meta" :components ("p"))
 		    ("p" :base-directory ,base))))
 	    (car (org-publish-get-project-from-filename file t))))))
+
+(ert-deftest test-org-publish/file-relative-name ()
+  "Test `org-publish-file-relative-name' specifications."
+  ;; Turn absolute file names into relative ones if file belongs to
+  ;; base directory.
+  (should
+   (equal "a.org"
+	  (let* ((base (expand-file-name "examples/pub/" org-test-dir))
+		 (file (expand-file-name "a.org" base)))
+	    (org-publish-file-relative-name file `(:base-directory ,base)))))
+  (should
+   (equal "pub/a.org"
+	  (let* ((base (expand-file-name "examples/" org-test-dir))
+		 (file (expand-file-name "pub/a.org" base)))
+	    (org-publish-file-relative-name file `(:base-directory ,base)))))
+  ;; Absolute file names that do not belong to base directory are
+  ;; unchanged.
+  (should
+   (equal "/name.org"
+	  (let ((base (expand-file-name "examples/pub/" org-test-dir)))
+	    (org-publish-file-relative-name "/name.org"
+					    `(:base-directory ,base)))))
+  ;; Relative file names are unchanged.
+  (should
+   (equal "a.org"
+	  (let ((base (expand-file-name "examples/pub/" org-test-dir)))
+	    (org-publish-file-relative-name "a.org" `(:base-directory ,base))))))
 
 
 (provide 'test-ox-publish)

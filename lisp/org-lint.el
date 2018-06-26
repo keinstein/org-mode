@@ -1,6 +1,6 @@
 ;;; org-lint.el --- Linting for Org documents        -*- lexical-binding: t; -*-
 
-;; Copyright (C) 2015-2017 Free Software Foundation, Inc.
+;; Copyright (C) 2015-2018 Free Software Foundation, Inc.
 
 ;; Author: Nicolas Goaziou <mail@nicolasgoaziou.fr>
 ;; Keywords: outlines, hypermedia, calendar, wp
@@ -18,7 +18,7 @@
 ;; GNU General Public License for more details.
 
 ;; You should have received a copy of the GNU General Public License
-;; along with GNU Emacs.  If not, see <http://www.gnu.org/licenses/>.
+;; along with GNU Emacs.  If not, see <https://www.gnu.org/licenses/>.
 
 ;;; Commentary:
 
@@ -100,7 +100,7 @@
 ;;   - indented diary-sexps
 ;;   - obsolete QUOTE section
 ;;   - obsolete "file+application" link
-;;   - blank headlines with tags
+;;   - spurious colons in tags
 
 
 ;;; Code:
@@ -288,10 +288,8 @@
     :description "Report obsolete \"file+application\" link"
     :categories '(link obsolete))
    (make-org-lint-checker
-    :name 'empty-headline-with-tags
-    :description "Report ambiguous empty headlines with tags"
-    :categories '(headline)
-    :trust 'low))
+    :name 'spurious-colons
+    :description "Report spurious colons in tags"))
   "List of all available checkers.")
 
 (defun org-lint--collect-duplicates
@@ -353,7 +351,7 @@ called with one argument, the key used for comparison."
   (org-lint--collect-duplicates
    ast
    'target
-   (lambda (target) (org-split-string (org-element-property :value target)))
+   (lambda (target) (split-string (org-element-property :value target)))
    (lambda (target _) (org-element-property :begin target))
    (lambda (key)
      (format "Duplicate target <<%s>>" (mapconcat #'identity key " ")))))
@@ -739,7 +737,7 @@ Use \"export %s\" instead"
     (org-element-map ast 'footnote-reference
       (lambda (f)
 	(let ((label (org-element-property :label f)))
-	  (and label
+	  (and (eq 'standard (org-element-property :type f))
 	       (not (member label definitions))
 	       (list (org-element-property :begin f)
 		     (format "Missing definition for footnote [%s]"
@@ -1000,7 +998,7 @@ Use \"export %s\" instead"
 	      (unless (memq allowed-values '(:any nil))
 		(let ((values (cdr header))
 		      groups-alist)
-		  (dolist (v (if (stringp values) (org-split-string values)
+		  (dolist (v (if (stringp values) (split-string values)
 			       (list values)))
 		    (let ((valid-value nil))
 		      (catch 'exit
@@ -1037,14 +1035,13 @@ Use \"export %s\" instead"
 			   reports))))))))))))
     reports))
 
-(defun org-lint-empty-headline-with-tags (ast)
+(defun org-lint-spurious-colons (ast)
   (org-element-map ast '(headline inlinetask)
     (lambda (h)
-      (let ((title (org-element-property :raw-value h)))
-	(and (string-match-p "\\`:[[:alnum:]_@#%:]+:\\'" title)
-	     (list (org-element-property :begin h)
-		   (format "Headline containing only tags is ambiguous: %S"
-			   title)))))))
+      (when (member "" (org-element-property :tags h))
+	(list (org-element-property :begin h)
+	      "Tags contain a spurious colon")))))
+
 
 
 ;;; Reports UI

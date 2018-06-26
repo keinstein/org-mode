@@ -1,10 +1,10 @@
 ;;; org-archive.el --- Archiving for Org             -*- lexical-binding: t; -*-
 
-;; Copyright (C) 2004-2017 Free Software Foundation, Inc.
+;; Copyright (C) 2004-2018 Free Software Foundation, Inc.
 
 ;; Author: Carsten Dominik <carsten at orgmode dot org>
 ;; Keywords: outlines, hypermedia, calendar, wp
-;; Homepage: http://orgmode.org
+;; Homepage: https://orgmode.org
 ;;
 ;; This file is part of GNU Emacs.
 ;;
@@ -19,7 +19,7 @@
 ;; GNU General Public License for more details.
 
 ;; You should have received a copy of the GNU General Public License
-;; along with GNU Emacs.  If not, see <http://www.gnu.org/licenses/>.
+;; along with GNU Emacs.  If not, see <https://www.gnu.org/licenses/>.
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;
 ;;; Commentary:
@@ -271,9 +271,15 @@ direct children of this heading."
 	  (org-back-to-heading t)
 	  ;; Get context information that will be lost by moving the
 	  ;; tree.  See `org-archive-save-context-info'.
-	  (let* ((all-tags (org-get-tags-at))
-		 (local-tags (org-get-tags))
-		 (inherited-tags (org-delete-all local-tags all-tags))
+	  (let* ((all-tags (org-get-tags))
+		 (local-tags
+		  (cl-remove-if (lambda (tag)
+				  (get-text-property 0 'inherited tag))
+				all-tags))
+		 (inherited-tags
+		  (cl-remove-if-not (lambda (tag)
+				      (get-text-property 0 'inherited tag))
+				    all-tags))
 		 (context
 		  `((category . ,(org-get-category nil 'force-refresh))
 		    (file . ,file)
@@ -315,12 +321,12 @@ direct children of this heading."
 		       org-odd-levels-only
 		     tr-org-odd-levels-only)))
 	      (goto-char (point-min))
-	      (outline-show-all)
+	      (org-show-all '(headings blocks))
 	      (if (and heading (not (and datetree-date (not datetree-subheading-p))))
 		  (progn
 		    (if (re-search-forward
 			 (concat "^" (regexp-quote heading)
-				 "[ \t]*\\(:[[:alnum:]_@#%:]+:\\)?[ \t]*\\($\\|\r\\)")
+				 "\\([ \t]+:\\(" org-tag-re ":\\)+\\)?[ \t]*$")
 			 nil t)
 			(goto-char (match-end 0))
 		      ;; Heading not found, just insert it at the end
@@ -345,8 +351,7 @@ direct children of this heading."
 		(if org-archive-reversed-order
 		    (progn
 		      (goto-char (point-min))
-		      (unless (org-at-heading-p) (outline-next-heading))
-		      (insert "\n") (backward-char 1))
+		      (unless (org-at-heading-p) (outline-next-heading)))
 		  (goto-char (point-max))
 		  ;; Subtree narrowing can let the buffer end on
 		  ;; a headline.  `org-paste-subtree' then deletes it.
@@ -361,7 +366,7 @@ direct children of this heading."
 		   (or (and (eq org-archive-subtree-add-inherited-tags 'infile)
 			    infile-p)
 		       (eq org-archive-subtree-add-inherited-tags t))
-		   (org-set-tags-to all-tags))
+		   (org-set-tags all-tags))
 	      ;; Mark the entry as done
 	      (when (and org-archive-mark-done
 			 (let ((case-fold-search nil))
@@ -381,10 +386,7 @@ direct children of this heading."
 		     (point)
 		     (concat "ARCHIVE_" (upcase (symbol-name item)))
 		     value))))
-	      (widen)
-	      ;; Save and kill the buffer, if it is not the same
-	      ;; buffer.
-	      (unless (eq this-buffer buffer) (save-buffer)))))
+	      (widen))))
 	;; Here we are back in the original buffer.  Everything seems
 	;; to have worked.  So now run hooks, cut the tree and finish
 	;; up.
@@ -393,6 +395,12 @@ direct children of this heading."
 	(when (featurep 'org-inlinetask)
 	  (org-inlinetask-remove-END-maybe))
 	(setq org-markers-to-move nil)
+	(when org-provide-todo-statistics
+	  (save-excursion
+	    ;; Go to parent, even if no children exist.
+	    (org-up-heading-safe)
+	    ;; Update cookie of parent.
+	    (org-update-statistics-cookies nil)))
 	(message "Subtree archived %s"
 		 (if (eq this-buffer buffer)
 		     (concat "under heading: " heading)
@@ -419,7 +427,7 @@ Archiving time is retained in the ARCHIVE_TIME node property."
 	 '(progn (setq org-map-continue-from
 		       (progn (org-back-to-heading)
 			      (if (looking-at (concat "^.*:" org-archive-tag ":.*$"))
-			      	  (org-end-of-subtree t)
+				  (org-end-of-subtree t)
 				(point))))
 		 (when (org-at-heading-p)
 		   (org-archive-to-archive-sibling)))
@@ -432,7 +440,7 @@ Archiving time is retained in the ARCHIVE_TIME node property."
 	(looking-at org-outline-regexp)
 	(setq leader (match-string 0)
 	      level (funcall outline-level))
-	(setq pos (point))
+	(setq pos (point-marker))
 	(condition-case nil
 	    (outline-up-heading 1 t)
 	  (error (setq e (point-max)) (goto-char (point-min))))
@@ -469,6 +477,9 @@ Archiving time is retained in the ARCHIVE_TIME node property."
 	(outline-up-heading 1 t)
 	(outline-hide-subtree)
 	(org-cycle-show-empty-lines 'folded)
+	(when org-provide-todo-statistics
+	  ;; Update TODO statistics of parent.
+	  (org-update-parent-todo-statistics))
 	(goto-char pos)))
     (org-reveal)
     (if (looking-at "^[ \t]*$")
